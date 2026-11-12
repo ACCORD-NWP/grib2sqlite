@@ -454,6 +454,27 @@ def param_match(gid, parameter_list):
     return None
 
 
+def _validate_path_component(value, label):
+    """Reject path separators and traversal in template substitutions.
+
+    Args:
+        value: value that will be inserted into the SQLite file path
+        label: name used in the error message
+
+    Returns:
+        The validated value.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty string")
+    if "\x00" in value:
+        raise ValueError(f"{label} contains a NUL character")
+    if value in (".", "..") or "/" in value or "\\" in value:
+        raise ValueError(
+            f"{label} must not contain path separators or be '.'/'..': {value!r}"
+        )
+    return value
+
+
 def sqlite_name(param, fcdate, model_name, sqlite_template):
     """Create the full name of the SQLite file from template and date.
 
@@ -466,6 +487,12 @@ def sqlite_name(param, fcdate, model_name, sqlite_template):
     Returns:
         full name of SQLite file
     """
+    # The model name and parameter name are inserted into the file path: make
+    # sure they cannot escape the output directory.
+    if "{PP}" in sqlite_template:
+        _validate_path_component(param["harp_param"], "harp_param")
+    if "{MODEL}" in sqlite_template:
+        _validate_path_component(model_name, "model_name")
     result = sqlite_template
     result = result.replace("{PP}", param["harp_param"])
     result = result.replace("{YYYY}", fcdate.strftime("%Y"))
@@ -1417,7 +1444,9 @@ def ensure_table_columns(con, member_columns):
         existing = {row[1] for row in cur.execute("PRAGMA table_info(FC)").fetchall()}
         for col in sorted(member_columns):
             if col not in existing:
-                cur.execute(f"ALTER TABLE FC ADD COLUMN {col} DOUBLE")
+                cur.execute(
+                    f"ALTER TABLE FC ADD COLUMN {_quote_identifier(col)} DOUBLE"
+                )
 
 
 def mbr_column(model_name, perturbation_number):
@@ -1508,7 +1537,10 @@ def create_table(data, station_list, param, fcdate, leadtime, model_name):
 
 def _quote_identifier(name):
     """Quote an SQLite identifier (column or table name)."""
-    return '"' + str(name).replace('"', '""') + '"'
+    name = str(name)
+    if "\x00" in name:
+        raise ValueError("SQL identifier contains a NUL character")
+    return '"' + name.replace('"', '""') + '"'
 
 
 def _upsert_conflict_columns(con, table):
@@ -1695,15 +1727,18 @@ def db_create(sqlite_file, param, model_name, n_members=None):
 
     fc_def = (
         "CREATE table if not exists FC ("
-        + ",".join(f"{p[0]} {p[1]} " for p in all_keys.items())
+        + ",".join(
+            f"{_quote_identifier(name)} {sql_type}"
+            for name, sql_type in all_keys.items()
+        )
         + ")"
     )
+    index_name = "index_" + "_".join(primary_keys.keys())
     pk_def = (
         "CREATE unique INDEX IF NOT EXISTS "
-        + "index_"
-        + "_".join(primary_keys.keys())
+        + _quote_identifier(index_name)
         + " ON FC("
-        + ",".join(primary_keys.keys())
+        + ",".join(_quote_identifier(name) for name in primary_keys)
         + ")"
     )
 
