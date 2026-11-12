@@ -3,7 +3,8 @@ import sys
 from argparse import ArgumentParser
 from glob import glob
 
-from .grib2sqlite import basedir, logger, parse_grib_file
+from .config import basedir, logger
+from .pipeline import parse_grib_file
 
 parser = ArgumentParser(prog="extractsqlite")
 current_wdir = os.getcwd()
