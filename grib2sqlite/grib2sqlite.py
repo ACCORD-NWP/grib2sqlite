@@ -1707,12 +1707,11 @@ def db_create(sqlite_file, param, model_name, n_members=None):
         + ")"
     )
 
-    con = sqlite3.connect(sqlite_file)
-    con.execute("PRAGMA journal_mode=WAL")
-    with con, closing(con.cursor()) as cur:
-        cur.execute(fc_def)
-        cur.execute(pk_def)
-    con.close()
+    with closing(sqlite3.connect(sqlite_file)) as con:
+        con.execute("PRAGMA journal_mode=WAL")
+        with con, closing(con.cursor()) as cur:
+            cur.execute(fc_def)
+            cur.execute(pk_def)
 
 
 def fctable_definition(param, model_name, n_members=None):
