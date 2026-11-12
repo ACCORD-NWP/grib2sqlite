@@ -1611,8 +1611,8 @@ def write_to_sqlite(
             # (e.g. file created by an earlier partial flush or a different run).
             needs_column_check = True
         with closing(sqlite3.connect(sqlite_file)) as con:
-            con.execute("PRAGMA journal_mode=WAL")
             con.execute("PRAGMA busy_timeout = 30000")
+            con.execute("PRAGMA journal_mode=WAL")
 
             if needs_column_check:
                 mbr_columns = list_mbr_columns(table, model_name)
@@ -1708,6 +1708,7 @@ def db_create(sqlite_file, param, model_name, n_members=None):
     )
 
     with closing(sqlite3.connect(sqlite_file)) as con:
+        con.execute("PRAGMA busy_timeout = 30000")
         con.execute("PRAGMA journal_mode=WAL")
         with con, closing(con.cursor()) as cur:
             cur.execute(fc_def)
