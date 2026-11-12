@@ -1318,11 +1318,12 @@ def parse_grib_file(
             if data_vector is not None:
                 logger.debug("SQLITE: writing combined field")
                 sqlite_file = sqlite_name(param, fcdate, model_name, sqlite_template)
-                col_name = model_name + "_det"
+                # Pass the base model name: create_table()/mbr_column() append
+                # the "_det" suffix once for deterministic fields.
                 data = create_table(
-                    data_vector, station_list, param, fcdate, leadtime, col_name
+                    data_vector, station_list, param, fcdate, leadtime, model_name
                 )
-                write_to_sqlite(data, sqlite_file, param, col_name)
+                write_to_sqlite(data, sqlite_file, param, model_name)
 
     logger.info(
         "SQLITE: Total %i records. %i matching of which %i direct and %i combined.",

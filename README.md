@@ -25,7 +25,7 @@ usage: grib2sqlite [-h] [-p param_file] [-s station_file] [-m model_name]
 *  -h, --help          show help message and exit
 *  -p <param_file>       parameter list file (json)
 *  -s <station_file>     station list file (csv)
-*  -m <model_name>       model name used in SQLite (usually <*>_det)
+*  -m <model_name>       base model name used in SQLite (deterministic fields get a _det suffix, ensemble members get _mbrNNN)
 *  -t <output_template>  template used for SQLite files
 *  -o <output_path>      path used for SQLite files
 *  -d <debug_level>      verbosity level (0...3) default: 1

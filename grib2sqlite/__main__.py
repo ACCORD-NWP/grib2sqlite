@@ -25,7 +25,7 @@ parser.add_argument(
 parser.add_argument(
     "-m",
     metavar="model_name",
-    help="model name used in SQLite (usually <*>_det)",
+    help="base model name used in SQLite (deterministic fields get a _det suffix)",
     default="TEST",
 )
 parser.add_argument(
