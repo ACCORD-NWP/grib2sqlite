@@ -53,6 +53,12 @@ parser.add_argument(
     action="store_true",
     help="treat input as ensemble GRIB file (members stored in _mbr001, _mbr002, ... columns)",
 )
+parser.add_argument(
+    "--cleanup",
+    action="store_true",
+    help="delete existing rows for the written keys before upserting "
+    "(default: merge/upsert only)",
+)
 
 args = parser.parse_args()
 if args.d == 0:
@@ -110,4 +116,5 @@ for file_glob in infile:
             model_name=model_name,
             weights=None,
             ensemble=args.ensemble,
+            cleanup=args.cleanup,
         )

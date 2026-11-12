@@ -1078,6 +1078,7 @@ def parse_grib_file(
     weights=None,
     model_name="TEST",
     ensemble=False,
+    cleanup=False,
 ):
     """Read a GRIB2 file and extract all required data points to SQLite.
 
@@ -1092,6 +1093,8 @@ def parse_grib_file(
                 Member data are stored in columns named <model_name>_mbr001 etc.
                 Note that the productDefinitionTemplateNumber and typeOfStatisticalProcessing
                 keys differ from deterministic, therefore the param_list must be eps-specific.
+      cleanup: if True, delete all existing rows for the written keys before
+               upserting. By default rows are merged (upsert only).
     Returns:
         Total number of GRIB records and number of matching parameters found.
     """
@@ -1226,7 +1229,11 @@ def parse_grib_file(
                     if ens_accumulators[key].is_complete:
                         accum = ens_accumulators.pop(key)
                         _flush_ensemble(
-                            accum, station_list, model_name, sqlite_template
+                            accum,
+                            station_list,
+                            model_name,
+                            sqlite_template,
+                            cleanup=cleanup,
                         )
                 else:
                     # this is a "direct" field, create a table and write to SQLite
@@ -1241,7 +1248,14 @@ def parse_grib_file(
                         leadtime,
                         model_name,
                     )
-                    write_to_sqlite(data, sqlite_file, param, model_name, None)
+                    write_to_sqlite(
+                        data,
+                        sqlite_file,
+                        param,
+                        model_name,
+                        None,
+                        cleanup=cleanup,
+                    )
 
             eccodes.codes_release(gid)
 
@@ -1263,7 +1277,9 @@ def parse_grib_file(
             accum.leadtime,
             missing,
         )
-        _flush_ensemble(accum, station_list, model_name, sqlite_template)
+        _flush_ensemble(
+            accum, station_list, model_name, sqlite_template, cleanup=cleanup
+        )
 
     # Check all combined parameters and write to SQLite
     logger.debug("SQLITE: checking cached combined fields")
@@ -1310,7 +1326,13 @@ def parse_grib_file(
                         param["harp_param"],
                         missing,
                     )
-                _flush_ensemble(cmb_accum, station_list, model_name, sqlite_template)
+                _flush_ensemble(
+                    cmb_accum,
+                    station_list,
+                    model_name,
+                    sqlite_template,
+                    cleanup=cleanup,
+                )
         else:
             # Deterministic: single combine_fields call, write directly.
             data_vector = combine_fields(param, station_list)
@@ -1323,7 +1345,7 @@ def parse_grib_file(
                 data = create_table(
                     data_vector, station_list, param, fcdate, leadtime, model_name
                 )
-                write_to_sqlite(data, sqlite_file, param, model_name)
+                write_to_sqlite(data, sqlite_file, param, model_name, cleanup=cleanup)
 
     logger.info(
         "SQLITE: Total %i records. %i matching of which %i direct and %i combined.",
@@ -1341,7 +1363,7 @@ def parse_grib_file(
 # ---------------------------------------------------------------------------
 
 
-def _flush_ensemble(accum, station_list, model_name, sqlite_template):
+def _flush_ensemble(accum, station_list, model_name, sqlite_template, cleanup=False):
     """Write all accumulated ensemble members for one (param, fcdate, leadtime) to SQLite.
 
     Each member is stored in a separate column named <model_name>_mbr001, …
@@ -1351,6 +1373,7 @@ def _flush_ensemble(accum, station_list, model_name, sqlite_template):
         station_list   : pandas table with station info
         model_name     : base model name (no suffix)
         sqlite_template: template string for the output SQLite path
+        cleanup        : if True, delete existing rows for the key before upserting
     """
     param = accum.param
     fcdate = accum.fcdate
@@ -1367,7 +1390,7 @@ def _flush_ensemble(accum, station_list, model_name, sqlite_template):
         leadtime,
         model_name,
     )
-    write_to_sqlite(table, sqlite_file, param, model_name, n_members)
+    write_to_sqlite(table, sqlite_file, param, model_name, n_members, cleanup=cleanup)
 
     logger.debug(
         "SQLITE: flushed %i members for %s fcdate=%s leadtime=%s",
@@ -1483,8 +1506,81 @@ def create_table(data, station_list, param, fcdate, leadtime, model_name):
     return table
 
 
-def write_to_sqlite(table, sqlite_file, param, model_name, n_members=None):
+def _quote_identifier(name):
+    """Quote an SQLite identifier (column or table name)."""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _upsert_conflict_columns(con, table):
+    """Find a unique FC index that can be used as an upsert conflict target.
+
+    Args:
+        con: database connection
+        table: pandas table about to be written
+
+    Returns:
+        List of unique-index column names, or None if no suitable index exists.
+    """
+    table_columns = set(table.columns)
+    for row in con.execute("PRAGMA index_list('FC')").fetchall():
+        index_name = row[1]
+        is_unique = row[2]
+        if not is_unique:
+            continue
+        index_columns = [
+            info[2]
+            for info in con.execute(
+                "SELECT * FROM pragma_index_info(?)", (index_name,)
+            ).fetchall()
+        ]
+        if index_columns and set(index_columns) <= table_columns:
+            return index_columns
+    return None
+
+
+def _upsert_table(con, table, conflict_columns):
+    """Insert rows, updating existing rows on a unique-index conflict.
+
+    Only columns present in the table are updated, so member columns that are
+    not part of this write keep their existing values.
+
+    Args:
+        con: database connection
+        table: pandas table to write
+        conflict_columns: columns of the FC unique index used as conflict target
+    """
+    columns = list(table.columns)
+    column_list = ", ".join(_quote_identifier(col) for col in columns)
+    placeholders = ", ".join("?" for _ in columns)
+    conflict = ", ".join(_quote_identifier(col) for col in conflict_columns)
+    key_columns = set(conflict_columns)
+    update_columns = [col for col in columns if col not in key_columns]
+
+    if update_columns:
+        updates = ", ".join(
+            f"{_quote_identifier(col)} = excluded.{_quote_identifier(col)}"
+            for col in update_columns
+        )
+        action = f"DO UPDATE SET {updates}"
+    else:
+        action = "DO NOTHING"
+
+    sql = (
+        f"INSERT INTO FC ({column_list}) VALUES ({placeholders}) "
+        f"ON CONFLICT ({conflict}) {action}"
+    )
+    con.executemany(sql, table.itertuples(index=False, name=None))
+
+
+def write_to_sqlite(
+    table, sqlite_file, param, model_name, n_members=None, cleanup=False
+):
     """Write a data table to SQLite.
+
+    Rows are upserted on the FC unique index. Columns not present in the table
+    (for example ensemble members from another file) keep their existing
+    values. With cleanup=True the existing rows for the written keys are
+    deleted first, restoring the old "replace the whole key" behaviour.
 
     Args:
         table: a data table
@@ -1492,6 +1588,7 @@ def write_to_sqlite(table, sqlite_file, param, model_name, n_members=None):
         param: parameter descriptor
         model_name: model name used in file path and data table
         n_members: number of ensemble members
+        cleanup: delete existing rows for the key before upserting
     """
     logger.debug("Writing to %s", sqlite_file)
     fcdate = float(table.iloc[0]["fcst_dttm"])
@@ -1513,25 +1610,30 @@ def write_to_sqlite(table, sqlite_file, param, model_name, n_members=None):
             # File pre-existed: patch any member columns that may be missing
             # (e.g. file created by an earlier partial flush or a different run).
             needs_column_check = True
-        con = sqlite3.connect(sqlite_file)
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute("PRAGMA busy_timeout = 30000")  # wait up to 30 s before failing
+        with closing(sqlite3.connect(sqlite_file)) as con:
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA busy_timeout = 30000")
 
-        if needs_column_check:
-            mbr_columns = list_mbr_columns(table, model_name)
-            ensure_table_columns(con, mbr_columns)
+            if needs_column_check:
+                mbr_columns = list_mbr_columns(table, model_name)
+                ensure_table_columns(con, mbr_columns)
 
-        logger.debug("leadtime (h): %i", leadtime)
-        db_cleanup(param, fcdate, leadtime, con)
+            conflict_columns = _upsert_conflict_columns(con, table)
+            if conflict_columns is None:
+                raise RuntimeError(
+                    f"SQLITE: no unique FC index in {sqlite_file} usable for upsert."
+                )
 
-        # now write to SQLite
-        table.to_sql("FC", con, if_exists="append", index=False)
-        con.commit()
+            logger.debug("leadtime (h): %i", leadtime)
+            # Cleanup and upsert share one transaction, so a failed write
+            # cannot lose rows that were already deleted.
+            with con:
+                if cleanup:
+                    db_cleanup(param, fcdate, leadtime, con, commit=False)
+                _upsert_table(con, table, conflict_columns)
 
-    con.close()
 
-
-def db_cleanup(param, fcd, leadtime, con):
+def db_cleanup(param, fcd, leadtime, con, commit=True):
     """Delete any prior version of the date (it's a primary key).
 
     Args:
@@ -1539,38 +1641,39 @@ def db_cleanup(param, fcd, leadtime, con):
         fcd: forecast date (string or int)
         leadtime: lead time (int)
         con: database connection
+        commit: commit the deletion (set False when part of a larger transaction)
     """
     logger.debug("Cleanup: ldt=%i", leadtime)
     cleanup = "DELETE from FC WHERE fcst_dttm=? AND lead_time=?"
-    cur = con.cursor()
     # NOTE: variables must be cast to int (or float),
     # because "numpy.int64" will not work in SQL
     # FIXME: better look whether the table has a "level" column!
+    with closing(con.cursor()) as cur:
+        cn1 = cur.execute("select name from PRAGMA_TABLE_INFO('FC')").fetchall()
+        colnames = [x[0] for x in cn1]
 
-    cn1 = cur.execute("select name from PRAGMA_TABLE_INFO('FC')").fetchall()
-    colnames = [x[0] for x in cn1]
-
-    if param["level_name"] in colnames:
-        lname = param["level_name"]
-        parlev = int(param["level"])
-        cleanup = cleanup + f" AND {lname}=?"
-        cur.execute(
-            cleanup,
-            (
-                float(fcd),
-                float(leadtime),
-                int(parlev),
-            ),
-        )
-    else:
-        cur.execute(
-            cleanup,
-            (
-                float(fcd),
-                float(leadtime),
-            ),
-        )
-    con.commit()
+        if param["level_name"] in colnames:
+            lname = param["level_name"]
+            parlev = int(param["level"])
+            cleanup = cleanup + f" AND {_quote_identifier(lname)}=?"
+            cur.execute(
+                cleanup,
+                (
+                    float(fcd),
+                    float(leadtime),
+                    int(parlev),
+                ),
+            )
+        else:
+            cur.execute(
+                cleanup,
+                (
+                    float(fcd),
+                    float(leadtime),
+                ),
+            )
+    if commit:
+        con.commit()
 
 
 def db_create(sqlite_file, param, model_name, n_members=None):

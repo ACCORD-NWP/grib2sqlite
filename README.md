@@ -29,6 +29,7 @@ usage: grib2sqlite [-h] [-p param_file] [-s station_file] [-m model_name]
 *  -t <output_template>  template used for SQLite files
 *  -o <output_path>      path used for SQLite files
 *  -d <debug_level>      verbosity level (0...3) default: 1
+*  --cleanup            delete existing rows for the written keys before upserting (default: merge/upsert only)
 
 Option `-d0` surpresses all messages except errors, `-d1` adds warnings, and so on up to `-d3` that will output a large amount of debugging information.
 
