@@ -10,6 +10,12 @@ from .config import logger
 
 # Per-SQLite-file locks used by parallel workers (threads) to serialise the
 # file-creation step and avoid "duplicate column name" races.
+# Keys must be normalised.
+
+# NOTE: the per-file locks are only valid for threads inside this process.
+#       we use WAL for safe readign durign writes, but if two processes write
+#       at the same time and the file system does not coprrectly report locking,
+#       data corruption is still possible.
 _sqlite_file_locks: dict = {}
 _sqlite_file_locks_lock = threading.Lock()
 
@@ -23,16 +29,33 @@ def _get_file_lock(path: str) -> threading.Lock:
     files.
 
     Args:
-        path: absolute or relative path to the SQLite file
+        path: absolute or relative path to the SQLite file (normalised here)
 
     Returns:
-        A threading.Lock unique to this path.
+        A threading.Lock unique to this resolved path.
     """
+    key = os.path.realpath(os.path.abspath(os.path.normpath(path)))
     with _sqlite_file_locks_lock:
-        if path not in _sqlite_file_locks:
-            _sqlite_file_locks[path] = threading.Lock()
-        return _sqlite_file_locks[path]
+        if key not in _sqlite_file_locks:
+            _sqlite_file_locks[key] = threading.Lock()
+        return _sqlite_file_locks[key]
 
+def _configure_connection(con):
+    """Apply the standard pragmas to a freshly opened SQLite connection.
+
+    busy_timeout is set before journal_mode so the mode change and DDL can
+    also wait for a lock held by another process. WAL may be unsupported on
+    network filesystems; warn and continue rather than break single-process
+    use, but make the degraded state visible.
+    """
+    con.execute("PRAGMA busy_timeout = 30000")
+    journal_mode = con.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+    if str(journal_mode).lower() != "wal":
+        logger.warning(
+            "SQLITE: WAL mode unavailable (journal_mode=%s); concurrent "
+            "writers may fail with SQLITE_BUSY.",
+            journal_mode,
+        )
 
 def _validate_path_component(value, label):
     """Reject path separators and traversal in template substitutions.
@@ -280,6 +303,7 @@ def write_to_sqlite(
     logger.debug("Writing to %s", sqlite_file)
     fcdate = float(table.iloc[0]["fcst_dttm"])
     leadtime = float(table.iloc[0]["lead_time"])
+    mbr_columns = sorted(list_mbr_columns(table, model_name))
     # Serialise file creation and schema patching across parallel workers.
     # Without this lock, two threads can both see os.path.isfile()==False and
     # both call db_create, producing "duplicate column name" errors.
@@ -289,17 +313,18 @@ def write_to_sqlite(
             sqlite_path = os.path.dirname(sqlite_file)
             if sqlite_path and not os.path.isdir(sqlite_path):
                 logger.info("SQLITE: Creating directory %s.", sqlite_path)
-                os.makedirs(sqlite_path)
+                os.makedirs(sqlite_path, exist_ok=True)
             logger.info("SQLITE: Creating sqlite file %s.", sqlite_file)
-            db_create(sqlite_file, param, model_name, n_members)
+            # NOTE: to create the table, we should know exactly which members are present
+            #       so we don't create empty columns.
+            db_create(sqlite_file, param, model_name, n_members, mbr_columns)
             needs_column_check = False
         else:
             # File pre-existed: patch any member columns that may be missing
             # (e.g. file created by an earlier partial flush or a different run).
             needs_column_check = True
         with closing(sqlite3.connect(sqlite_file)) as con:
-            con.execute("PRAGMA busy_timeout = 30000")
-            con.execute("PRAGMA journal_mode=WAL")
+            _configure_connection(con)
 
             if needs_column_check:
                 mbr_columns = list_mbr_columns(table, model_name)
@@ -363,7 +388,7 @@ def db_cleanup(param, fcd, leadtime, con, commit=True):
         con.commit()
 
 
-def db_create(sqlite_file, param, model_name, n_members=None):
+def db_create(sqlite_file, param, model_name, n_members=None, member_list=[]):
     """Create new SQLite file with FC table.
 
     The table is designed to be compatible with harp, so uses the same
@@ -375,9 +400,9 @@ def db_create(sqlite_file, param, model_name, n_members=None):
       param: parameter descriptor
       model_name: model name used in SQLite
       n_members: number of ensemble members (default=None for deterministic)
-
+      member_list: list of perturbation numbers available in the data
     """
-    primary_keys, other_keys = fctable_definition(param, model_name, n_members)
+    primary_keys, other_keys = fctable_definition(param, model_name, n_members, member_list)
     all_keys = {**primary_keys, **other_keys}
 
     fc_def = (
@@ -398,20 +423,20 @@ def db_create(sqlite_file, param, model_name, n_members=None):
     )
 
     with closing(sqlite3.connect(sqlite_file)) as con:
-        con.execute("PRAGMA busy_timeout = 30000")
-        con.execute("PRAGMA journal_mode=WAL")
+        _configure_connection(con)
         with con, closing(con.cursor()) as cur:
             cur.execute(fc_def)
             cur.execute(pk_def)
 
 
-def fctable_definition(param, model_name, n_members=None):
+def fctable_definition(param, model_name, n_members=None, member_list=[]):
     """Create the SQL command for FCtable definition.
 
     Args:
         param: the parameter descriptor
         model_name: model name to be used
         n_members: number of ensemble members (None for deterministic)
+        member_list: the ensemble members present in the data table.
 
     Returns:
         S(primary_keys, other_keys) – both ordered dicts of {col_name: sql_type}
@@ -430,7 +455,8 @@ def fctable_definition(param, model_name, n_members=None):
     if n_members is None:
         other_keys[mbr_column(model_name, None)] = "DOUBLE"
     else:
-        for mbr in range(n_members + 1):
+        # for mbr in range(0, n_members + 1):
+        for mbr in sorted(member_list):
             other_keys[mbr_column(model_name, mbr)] = "DOUBLE"
     # for T2m correction
     if "T2m" in param["harp_param"]:

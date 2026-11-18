@@ -1,6 +1,6 @@
 """GRIB metadata and field decoding helpers."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import eccodes
 
@@ -70,7 +70,7 @@ def date_from_gribinfo(info):
             info["dataDate"], info["hour"], info["minute"], info["second"]
         ),
         "%Y%m%dT%H%M%S",
-    )
+    ).replace(tzinfo=timezone.utc)
 
     if info["editionNumber"] == 1:
         tunit = info["stepUnits"]
@@ -131,7 +131,7 @@ def get_proj4(gid):
         proj4["lat_2"] = p4["Latin2InDegrees"]
         # TODO: Northern of Southern hemisphere? projectionCentreFlag (?)
 
-    elif gridtype == "polar_steoreographic":
+    elif gridtype == "polar_stereographic":
         pkeys = ["LoVInDegrees"]
         p4 = get_keylist(gid, pkeys, "double")
         proj4["proj"] = "stere"

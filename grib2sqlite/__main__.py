@@ -90,7 +90,7 @@ if len(infile) == 0:
     sys.exit()
 
 logger.debug(f"Total file input: {infile}")
-iter = 0
+fi = 0
 for file_glob in infile:
     logger.debug(f"file_glob = {file_glob}")
     file_list = glob(file_glob)
@@ -104,8 +104,8 @@ for file_glob in infile:
         raise FileNotFoundError("No input files found!")
     for file_name in file_list:
         logger.debug(f"file_name = {file_name}")
-        iter = iter + 1
-        logger.info(f"{iter:3d}:  Reading {file_name}")
+        fi = fi + 1
+        logger.info(f"{fi:3d}:  Reading {file_name}")
         if not os.path.isfile(file_name):
             logger.warning(f"GRIB file not found: {file_name}")
             continue

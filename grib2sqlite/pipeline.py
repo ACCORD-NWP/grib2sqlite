@@ -56,6 +56,11 @@ class _EnsembleAccumulator:
         return len(self.members) == self.n_members
 
     def missing_members(self):
+        # NOTE: we don't know if members are numbered 1..N or 0..(N-1)
+        #       so we can not be sure whether mbr000 or mbrNNN is missing.
+        #       That is just a minor problem, as this is purely indicative.
+        if self.is_complete:
+            return []
         return sorted(set(range(self.n_members + 1)) - set(self.members.keys()))
 
 
@@ -138,10 +143,6 @@ def parse_grib_file(
 
     # split into "combined" and "direct" parameters
     param_sgl_list, param_cmb_list = parse_parameter_list(param_list)
-    param_cmb_cache = [None] * len(param_cmb_list)
-    if len(param_cmb_list) > 0:
-        for pp in range(len(param_cmb_cache)):
-            param_cmb_cache[pp] = {}
 
     logger.info(
         "SQLITE: expecting %i single and %i combined parameters.",
@@ -231,16 +232,24 @@ def parse_grib_file(
             data_vector = interp_from_weights(gid, weights, method)
 
             if ensemble:
+                # NOTE: ensemble and deterministic fields occur in the same file
+                #       we could get inconsistent behaviour because
+                #       n_members would change randomly between 1 and N
+                #       But this could be fixed with good parameter lists
+                #       If template is used, ens and det can not be
+                #       the same parameter, so it should be OK.
                 perturbation_number, n_members = get_ensemble_info(gid)
 
                 if perturbation_number is None:
-                    logger.warning(
+                    logger.debug(
                         "SQLITE: ensemble=True but record has no perturbationNumber "
-                        "for parameter %s – skipping.",
+                        "for parameter %s – setting to mbr000.",
                         param["harp_param"],
                     )
-                    eccodes.codes_release(gid)
-                    continue
+                    perturbation_number = 0
+                    n_members = 1
+                    #eccodes.codes_release(gid)
+                    #continue
             else:
                 perturbation_number = None
                 n_members = None
