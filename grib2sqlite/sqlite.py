@@ -388,7 +388,7 @@ def db_cleanup(param, fcd, leadtime, con, commit=True):
         con.commit()
 
 
-def db_create(sqlite_file, param, model_name, n_members=None, member_list=[]):
+def db_create(sqlite_file, param, model_name, n_members=None, member_columns=None):
     """Create new SQLite file with FC table.
 
     The table is designed to be compatible with harp, so uses the same
@@ -400,9 +400,9 @@ def db_create(sqlite_file, param, model_name, n_members=None, member_list=[]):
       param: parameter descriptor
       model_name: model name used in SQLite
       n_members: number of ensemble members (default=None for deterministic)
-      member_list: list of perturbation numbers available in the data
+      member_columns: list of ensemble members available in the data
     """
-    primary_keys, other_keys = fctable_definition(param, model_name, n_members, member_list)
+    primary_keys, other_keys = fctable_definition(param, model_name, n_members, member_columns)
     all_keys = {**primary_keys, **other_keys}
 
     fc_def = (
@@ -429,14 +429,14 @@ def db_create(sqlite_file, param, model_name, n_members=None, member_list=[]):
             cur.execute(pk_def)
 
 
-def fctable_definition(param, model_name, n_members=None, member_list=[]):
+def fctable_definition(param, model_name, n_members=None, member_columns=None):
     """Create the SQL command for FCtable definition.
 
     Args:
         param: the parameter descriptor
         model_name: model name to be used
         n_members: number of ensemble members (None for deterministic)
-        member_list: the ensemble members present in the data table.
+        member_columns: the ensemble members present in the data table.
 
     Returns:
         S(primary_keys, other_keys) – both ordered dicts of {col_name: sql_type}
@@ -452,12 +452,19 @@ def fctable_definition(param, model_name, n_members=None, member_list=[]):
         "parameter": "TEXT",
         "units": "TEXT",
     }
-    if n_members is None:
-        other_keys[mbr_column(model_name, None)] = "DOUBLE"
+    # when called from the standard pipeline, 
+    # the table should always have data columns for all members
+    if member_columns: # EPS members (<>_mbrxxx) or DET (<>_det)
+        for col in sorted(member_columns):
+            other_keys[col] = "DOUBLE"
     else:
-        # for mbr in range(0, n_members + 1):
-        for mbr in sorted(member_list):
-            other_keys[mbr_column(model_name, mbr)] = "DOUBLE"
+        # This shouldn't happen, but maybe if the table definition is called directly from outside.
+        logger.warning("no model data columns. Going by n_members=%s", n_members)
+        if n_members is None: # Deterministic
+            other_keys[mbr_column(model_name, None)] = "DOUBLE"
+        else:
+            for mbr in range(0, n_members):
+                other_keys[member_column(model_name, mbr)] = "DOUBLE"
     # for T2m correction
     if "T2m" in param["harp_param"]:
         other_keys["elev"] = "DOUBLE"

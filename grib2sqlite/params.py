@@ -333,5 +333,6 @@ def cache_field(param, data, param_cmb_list, gid, perturbation_number=None):
                     cmb["proj4"] = get_proj4(gid)
                 count += 1
                 continue
-    logger.debug("Found %i matching combined parameters.", count)
+    if count > 0:
+        logger.debug("Found %i matching combined parameters.", count)
     return count
