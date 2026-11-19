@@ -56,12 +56,24 @@ class _EnsembleAccumulator:
         return len(self.members) == self.n_members
 
     def missing_members(self):
-        # NOTE: we don't know if members are numbered 1..N or 0..(N-1)
-        #       so we can not be sure whether mbr000 or mbrNNN is missing.
-        #       That is just a minor problem, as this is purely indicative.
         if self.is_complete:
             return []
-        return sorted(set(range(self.n_members + 1)) - set(self.members.keys()))
+        if not self.members:
+            return []
+        # Members may be numbered 1..N or 0..(N-1). Use the observed maximum
+        # as well as the minimum to infer the numbering: N-1 means 0-based,
+        # N means 1-based. Otherwise assume 1-based unless member 0 was seen,
+        # and clamp to 1 so a missing member 1 is still reported.
+        # This is indicative only: the exact expected set is not known here.
+        mx = max(self.members)
+        if 0 in self.members or mx == self.n_members - 1:
+            start = 0
+        elif mx == self.n_members:
+            start = 1
+        else:
+            start = min(min(self.members), 1)
+        expected = set(range(start, start + self.n_members))
+        return sorted(expected - set(self.members))
 
 
 def _ens_key(param, fcdate, leadtime):
@@ -116,6 +128,7 @@ def parse_grib_file(
     weights=None,
     model_name="TEST",
     ensemble=False,
+    det_member=0,
     cleanup=False,
 ):
     """Read a GRIB2 file and extract all required data points to SQLite.
@@ -131,11 +144,16 @@ def parse_grib_file(
                 Member data are stored in columns named <model_name>_mbr001 etc.
                 Note that the productDefinitionTemplateNumber and typeOfStatisticalProcessing
                 keys differ from deterministic, therefore the param_list must be eps-specific.
+      det_member: member number to use when ensemble=True and a record has no
+                  perturbationNumber; written as <model_name>_mbrNNN. Default 0.
       cleanup: if True, delete all existing rows for the written keys before
                upserting. By default rows are merged (upsert only).
     Returns:
         Total number of GRIB records and number of matching parameters found.
     """
+    if det_member < 0:
+        raise ValueError("det_member must be a non-negative integer")
+
     if isinstance(station_list, str):
         station_list = read_station_list(station_list)
     if isinstance(param_list, str):
@@ -243,10 +261,11 @@ def parse_grib_file(
                 if perturbation_number is None:
                     logger.debug(
                         "SQLITE: ensemble=True but record has no perturbationNumber "
-                        "for parameter %s – setting to mbr000.",
+                        "for parameter %s – setting to mbr%03d.",
                         param["harp_param"],
+                        det_member,
                     )
-                    perturbation_number = 0
+                    perturbation_number = det_member
                     n_members = 1
                     #eccodes.codes_release(gid)
                     #continue
@@ -257,7 +276,9 @@ def parse_grib_file(
             # Cache data for combined parameters (wind speed/direction etc.)
             # Each member's components are stored separately so that
             # combine_fields can be called independently per member.
-            cache_field(param, data_vector, param_cmb_list, gid, perturbation_number)
+            cache_field(
+                param, data_vector, param_cmb_list, gid, perturbation_number, n_members
+            )
 
             if direct:
                 if ensemble:
@@ -338,9 +359,9 @@ def parse_grib_file(
                 )
                 continue
 
-            # Determine n_members from any available accumulator, or fall back
-            # to the number of members actually seen for this combined param.
-            n_members = max(member_data.keys())
+            # Prefer the ensemble size reported by GRIB; fall back to the
+            # highest perturbation number when that key was not available.
+            n_members = param.get("n_members") or max(member_data.keys())
 
             cmb_accum = _EnsembleAccumulator(n_members, param, fcdate, leadtime)
             for mbr_num, component_data in member_data.items():

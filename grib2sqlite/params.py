@@ -291,7 +291,9 @@ def match_keys(p1, p2):
     return True
 
 
-def cache_field(param, data, param_cmb_list, gid, perturbation_number=None):
+def cache_field(
+    param, data, param_cmb_list, gid, perturbation_number=None, n_members=None
+):
     """Check if a decoded field needs to be cached for later parameters.
 
     Args:
@@ -299,12 +301,17 @@ def cache_field(param, data, param_cmb_list, gid, perturbation_number=None):
       data: decode (and interpolated) data
       param_cmb_list: a list (may be MODIFIED!)
       gid: GRIB handle (needed to cache the projection and grid details for every field)
+      perturbation_number: ensemble member number, or None for deterministic data
+      n_members: ensemble size reported by GRIB, or None for deterministic data
 
     Returns:
       A count of the number of matching parameters.
       Usually 0 or 1, but wind components may be used for direction and speed,
       so may be matched twice.
     """
+    # NOTE: when storing a deterministic run as an ensemble member,
+    #       n_members may be "1" while det_member may be > 1.
+    #       So often n_members reflect the "expected" number.
     count = 0
     gridinfo_list = ["uvRelativeToGrid"]
     for cmb in param_cmb_list:
@@ -328,6 +335,8 @@ def cache_field(param, data, param_cmb_list, gid, perturbation_number=None):
                 cmb["units"] = param["units"]
                 cmb["level"] = param["level"]
                 cmb["level_name"] = param["level_name"]
+                if n_members is not None:
+                    cmb["n_members"] = n_members
                 if cmb["gridinfo"] is None:
                     cmb["gridinfo"] = get_keylist(gid, gridinfo_list, "long")
                     cmb["proj4"] = get_proj4(gid)

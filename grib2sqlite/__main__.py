@@ -55,6 +55,14 @@ parser.add_argument(
     help="treat input as ensemble GRIB file (members stored in _mbr001, _mbr002, ... columns)",
 )
 parser.add_argument(
+    "--det-member",
+    metavar="N",
+    type=int,
+    default=0,
+    help="member number for records without perturbationNumber when -e is used "
+    "(default: 0 -> <model>_mbr000)",
+)
+parser.add_argument(
     "--cleanup",
     action="store_true",
     help="delete existing rows for the written keys before upserting "
@@ -117,5 +125,6 @@ for file_glob in infile:
             model_name=model_name,
             weights=None,
             ensemble=args.ensemble,
+            det_member=args.det_member,
             cleanup=args.cleanup,
         )
