@@ -1,10 +1,6 @@
 # grib2sqlite
 
 Interpolate grib files to sqlite tables for the harp verification tool.
-
-22-11-2024
-alex.deckmyn@meteo.be
-
 Can be called via command line or used as a module.
 
 ## Command line
@@ -25,12 +21,26 @@ usage: grib2sqlite [-h] [-p param_file] [-s station_file] [-m model_name]
 *  -h, --help          show help message and exit
 *  -p <param_file>       parameter list file (json)
 *  -s <station_file>     station list file (csv)
-*  -m <model_name>       model name used in SQLite (usually <*>_det)
+*  -m <model_name>       base model name used in SQLite (deterministic fields get a _det suffix, ensemble members get _mbrNNN)
 *  -t <output_template>  template used for SQLite files
 *  -o <output_path>      path used for SQLite files
 *  -d <debug_level>      verbosity level (0...3) default: 1
+*  -e, --ensemble        treat input as ensemble data (members in _mbrNNN columns)
+*  --det-member <N>      with -e, member number used for records without a perturbationNumber (default: 0, i.e. _mbr000)
+*  --cleanup            delete existing rows for the written keys before upserting (default: merge/upsert only)
 
 Option `-d0` surpresses all messages except errors, `-d1` adds warnings, and so on up to `-d3` that will output a large amount of debugging information.
+
+## Ensemble mode
+
+With `-e`, records that have a `perturbationNumber` are written to `<model>_mbrNNN` columns. Records without one (deterministic fields) are written to member 0 by default. Use `--det-member <N>` to choose another member number, e.g. when each member forecast is supplied as a separate deterministic GRIB file:
+
+    python3 -m grib2sqlite -e --det-member 7 -m IFSENS member007.grib2
+    python3 -m grib2sqlite -e --det-member 8 -m IFSENS member008.grib2
+
+Both runs must use the same model name, output template/path and parameter list. Rows are merged by upsert, so the second run adds its member column without erasing the first. Do **not** combine this with `--cleanup`: it deletes the whole row for a key before writing, which would remove member columns written by earlier runs.
+
+Note that the productDefinitionTemplateNumber and typeOfStatisticalProcessing keys of ensemble data differ from deterministic data, so an ensemble-specific parameter list is usually needed.
 
 ## Station list
 

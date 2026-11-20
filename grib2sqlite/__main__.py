@@ -1,51 +1,83 @@
-from .__init__ import * 
-
-"""Command line version."""
-import argparse
+import os
+import sys
+from argparse import ArgumentParser
 from glob import glob
-import json
-import pandas 
-parser = argparse.ArgumentParser(prog="extractsqlite")
+
+from .config import basedir, logger
+from .pipeline import parse_grib_file
+
+parser = ArgumentParser(prog="extractsqlite")
 current_wdir = os.getcwd()
 # positional argument:
 # we allow multiple GRIB files, but some might even be globs
-parser.add_argument("gribfile", metavar="/path/to/file(s)",
-        nargs='+' )
-parser.add_argument('-p', metavar="param_file",
-    help="parameter list file (json)",
-    default = basedir + "/data/param_list_default.json")
-parser.add_argument('-s', metavar="station_file",
-    help="station list file (csv)",
-    default = basedir + "/data/station_list_default.csv")
-parser.add_argument('-m', metavar="model_name",
-    help="model name used in SQLite (usually <*>_det)",
-    default = "TEST_det")
-parser.add_argument('-t', metavar="output_template",
-    help="template used for SQLite files",
-    default = "{MODEL}/{YYYY}/{MM}/FCTABLE_{PP}_{YYYY}{MM}.sqlite")
-parser.add_argument('-o', metavar="output_path",
-    help="path used for SQLite files",
-    default = current_wdir + "/FCTABLE")
-parser.add_argument('-d', metavar="debug_level",
-    type = int,
-    help="verbosity level (0...3) default: 1",
-    default = 1)
-
+parser.add_argument("gribfile", metavar="/path/to/file(s)", nargs="+")
 parser.add_argument(
-    '-e', '--ensemble',
-    action='store_true',
+    "-p",
+    metavar="param_file",
+    help="parameter list file (json)",
+    default=basedir + "/data/param_list_default.json",
+)
+parser.add_argument(
+    "-s",
+    metavar="station_file",
+    help="station list file (csv)",
+    default=basedir + "/data/station_list_default.csv",
+)
+parser.add_argument(
+    "-m",
+    metavar="model_name",
+    help="base model name used in SQLite (deterministic fields get a _det suffix)",
+    default="TEST",
+)
+parser.add_argument(
+    "-t",
+    metavar="output_template",
+    help="template used for SQLite files",
+    default="{MODEL}/{YYYY}/{MM}/FCTABLE_{PP}_{YYYY}{MM}.sqlite",
+)
+parser.add_argument(
+    "-o",
+    metavar="output_path",
+    help="path used for SQLite files",
+    default=current_wdir + "/FCTABLE",
+)
+parser.add_argument(
+    "-d",
+    metavar="debug_level",
+    type=int,
+    help="verbosity level (0...3) default: 1",
+    default=1,
+)
+parser.add_argument(
+    "-e",
+    "--ensemble",
+    action="store_true",
     help="treat input as ensemble GRIB file (members stored in _mbr001, _mbr002, ... columns)",
+)
+parser.add_argument(
+    "--det-member",
+    metavar="N",
+    type=int,
+    default=0,
+    help="member number for records without perturbationNumber when -e is used "
+    "(default: 0 -> <model>_mbr000)",
+)
+parser.add_argument(
+    "--cleanup",
+    action="store_true",
+    help="delete existing rows for the written keys before upserting "
+    "(default: merge/upsert only)",
 )
 
 args = parser.parse_args()
 if args.d == 0:
-    logger.setLevel('ERROR')
+    logger.setLevel("ERROR")
 elif args.d == 1:
-    logger.setLevel('WARNING')
+    logger.setLevel("WARNING")
 elif args.d == 2:
-    logger.setLevel('INFO')
+    logger.setLevel("INFO")
 elif args.d > 2:
-    logger.setLevel('DEBUG')
+    logger.setLevel("DEBUG")
 
 station_file = args.s
 param_file = args.p
@@ -63,10 +95,10 @@ logger.info(f"Output files   : {sqlite_template}")
 
 if len(infile) == 0:
     logger.error("No input GRIB file given.")
-    exit()
+    sys.exit()
 
 logger.debug(f"Total file input: {infile}")
-iter = 0
+fi = 0
 for file_glob in infile:
     logger.debug(f"file_glob = {file_glob}")
     file_list = glob(file_glob)
@@ -80,17 +112,19 @@ for file_glob in infile:
         raise FileNotFoundError("No input files found!")
     for file_name in file_list:
         logger.debug(f"file_name = {file_name}")
-        iter = iter + 1
-        logger.info(f"{iter:3d}:  Reading {file_name}")
+        fi = fi + 1
+        logger.info(f"{fi:3d}:  Reading {file_name}")
         if not os.path.isfile(file_name):
             logger.warning(f"GRIB file not found: {file_name}")
             continue
         gt, gi = parse_grib_file(
-            infile = file_name,
-            param_list = param_file,
-            station_list = station_file,
-            sqlite_template = sqlite_template,
-            model_name = model_name,
-            weights = None,
-            ensemble = args.ensemble)        
-
+            infile=file_name,
+            param_list=param_file,
+            station_list=station_file,
+            sqlite_template=sqlite_template,
+            model_name=model_name,
+            weights=None,
+            ensemble=args.ensemble,
+            det_member=args.det_member,
+            cleanup=args.cleanup,
+        )
