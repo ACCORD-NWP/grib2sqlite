@@ -62,16 +62,18 @@ class _EnsembleAccumulator:
             return []
         # Members may be numbered 1..N or 0..(N-1). Use the observed maximum
         # as well as the minimum to infer the numbering: N-1 means 0-based,
-        # N means 1-based. Otherwise assume 1-based unless member 0 was seen,
-        # and clamp to 1 so a missing member 1 is still reported.
+        # N means 1-based.
+        # If unclear, default to 0-based (like in ENS).
         # This is indicative only: the exact expected set is not known here.
         mx = max(self.members)
-        if 0 in self.members or mx == self.n_members - 1:
-            start = 0
-        elif mx == self.n_members:
+        if mx == self.n_members:
             start = 1
+        elif 0 in self.members or mx == self.n_members - 1:
+            # NOTE: if in reality it is 1-based and member N is missing
+            # this will report "0" as missing in stead. Can't be helped.
+            start = 0
         else:
-            start = min(min(self.members), 1)
+            start = 0
         expected = set(range(start, start + self.n_members))
         return sorted(expected - set(self.members))
 
